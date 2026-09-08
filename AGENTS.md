@@ -8,7 +8,9 @@ A premium, mobile-first sensory playground for iPhone, built with React and Next
 - Keep core interactions local. No accounts, analytics, microphone, or external sound downloads are needed.
 
 ## Interaction requirements
-- Use `lib/press.ts` for immediate tap feedback; retain keyboard clicks and suppress duplicate pointer-generated clicks.
+- Sound belongs to a discrete state change: a popped bubble, a depressed key, a switch flip, or a crossed detent. Never make repeated sounds from holding or generic pointer movement.
+- Use `lib/snaps.ts` for wheel and zipper detents, including hysteresis and angular wraparound. Use `lib/press.ts` only for tap toys with an immediate discrete state change.
+- Default to a white, monochrome interface. On phones the play view contains only an upright toy and the fully rounded More Fidgets button at the bottom. Put secondary controls in the chooser. Respect reduced-motion preferences for blur transitions.
 - Keep collection previews memoized and avoid updating page state for each interaction.
 - Use Pointer Events with capture and handle pointer cancellation. Touch targets must be at least 44px.
 - Request motion permission only from an explicit user gesture. Always retain touch fallbacks.
