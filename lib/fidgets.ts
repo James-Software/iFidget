@@ -59,7 +59,7 @@ export const fidgets = [
     category: 'Slide',
     color: '#b7adff',
     description: 'Less thinking. More spinning.',
-    instruction: 'Swipe to spin. Tap to give it a nudge.',
+    instruction: 'Drag around the center to snap between stops.',
     tag: 'JUST ONE MORE SPIN',
   },
   {
@@ -68,7 +68,7 @@ export const fidgets = [
     category: 'Slide',
     color: '#f6a6b9',
     description: 'That perfect zzzip, on repeat.',
-    instruction: 'Slide the zipper up and down.',
+    instruction: 'Drag the zipper. One tooth, one click.',
     tag: 'UNZIP YOUR MIND',
   },
   {
