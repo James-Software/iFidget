@@ -1,492 +1,331 @@
 'use client';
-import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ArrowUpRight,
-  AudioLines,
-  ChevronRight,
+  Check,
+  Grid2X2,
   Heart,
-  Maximize2,
-  Minimize2,
+  Moon,
   RotateCcw,
-  Settings2,
-  Shuffle,
   Smartphone,
-  Sparkles,
+  Sun,
   Volume2,
   VolumeX,
   X,
-  Zap,
 } from 'lucide-react';
 import Playground from '@/components/fidget-playground';
 import { fidgets, type FidgetId } from '@/lib/fidgets';
-import { feedback, suspendAudio } from '@/lib/feedback';
+import { feedback, prepareAudio, suspendAudio } from '@/lib/feedback';
 
 const silentPreview = () => {};
 
 export default function Home() {
-  const [selected, setSelected] = useState<FidgetId>('pop');
-  const [filter, setFilter] = useState('All fidgets');
+  const [selected, setSelected] = useState<FidgetId>('dial');
+  const [reset, setReset] = useState(0);
+  const [open, setOpen] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const [dark, setDark] = useState(false);
   const [sound, setSound] = useState(true);
   const [haptics, setHaptics] = useState(true);
-  const [motion, setMotion] = useState(false);
-  const [motionStatus, setMotionStatus] = useState(
-    'Enable tilt & shake for motion toys.',
-  );
-  const [canVibrate, setCanVibrate] = useState(false);
-  const [settings, setSettings] = useState(false);
-  const [focus, setFocus] = useState(false);
-  const [reset, setReset] = useState(0);
-  const [count, setCount] = useState(0);
-  const interactionCount = useRef(0);
   const [favorites, setFavorites] = useState<string[]>([]);
+  const [onlyFavorites, setOnlyFavorites] = useState(false);
+  const [motion, setMotion] = useState(false);
+  const [status, setStatus] = useState('');
+  const [vibration, setVibration] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
-  const toyRef = useRef<HTMLElement>(null);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const moreButton = useRef<HTMLButtonElement>(null);
   const current = fidgets.find((f) => f.id === selected)!;
+
   useEffect(() => {
-    // Browser capabilities and persisted preferences must hydrate after the server render.
+    // Browser preferences hydrate after the server's white default render.
     // eslint-disable-next-line react/react-compiler
-    setCanVibrate(typeof navigator.vibrate === 'function');
+    setVibration(typeof navigator.vibrate === 'function');
     try {
-      const prefs = JSON.parse(localStorage.getItem('ifidget-prefs') || '{}');
-      setSound(prefs.sound !== false);
-      setHaptics(prefs.haptics !== false);
+      const saved = JSON.parse(localStorage.getItem('ifidget-prefs') || '{}');
+      setSound(saved.sound !== false);
+      setHaptics(saved.haptics !== false);
+      setDark(saved.dark === true);
       setFavorites(
-        Array.isArray(prefs.favorites)
-          ? prefs.favorites.filter((v: unknown) => typeof v === 'string')
+        Array.isArray(saved.favorites)
+          ? saved.favorites.filter((id: unknown) => typeof id === 'string')
           : [],
       );
     } catch {
-      /* Defaults remain usable in private browsing. */
+      /* Preferences are optional. */
     }
-    const pause = () => {
+    const hidden = () => {
       if (document.hidden) suspendAudio();
     };
-    document.addEventListener('visibilitychange', pause);
-    return () => document.removeEventListener('visibilitychange', pause);
+    document.addEventListener('visibilitychange', hidden);
+    return () => {
+      document.removeEventListener('visibilitychange', hidden);
+      if (closeTimer.current) clearTimeout(closeTimer.current);
+    };
   }, []);
   useEffect(() => {
-    if (settings) dialog.current?.showModal();
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    document
+      .querySelector('meta[name="theme-color"]')
+      ?.setAttribute('content', dark ? '#111111' : '#ffffff');
+  }, [dark]);
+  useEffect(() => {
+    if (open) dialog.current?.showModal();
     else dialog.current?.close();
-  }, [settings]);
-  function openSettings() {
-    setCount(interactionCount.current);
-    setSettings(true);
-  }
+  }, [open]);
+  const play = useCallback(
+    (kind: string, pitch = 0, delay = 0) =>
+      feedback(kind, pitch, sound, haptics, delay),
+    [sound, haptics],
+  );
   function save(next: {
     sound?: boolean;
+    dark?: boolean;
     haptics?: boolean;
     favorites?: string[];
   }) {
     try {
       localStorage.setItem(
         'ifidget-prefs',
-        JSON.stringify({ sound, haptics, favorites, ...next }),
+        JSON.stringify({ sound, dark, haptics, favorites, ...next }),
       );
     } catch {
-      /* Storage is optional. */
+      /* Private browsing remains usable. */
     }
   }
-  const play = useCallback(
-    (kind: string, pitch = 0) => {
-      feedback(kind, pitch, sound, haptics);
-      interactionCount.current += 1;
-    },
-    [sound, haptics],
-  );
-  function choose(id: FidgetId, scroll = false) {
+  function close() {
+    if (closing) return;
+    setClosing(true);
+    closeTimer.current = setTimeout(
+      () => {
+        setOpen(false);
+        setClosing(false);
+        moreButton.current?.focus();
+      },
+      matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 180,
+    );
+  }
+  function choose(id: FidgetId) {
     setSelected(id);
     setReset((r) => r + 1);
-    if (scroll && window.innerWidth < 800)
-      toyRef.current?.scrollIntoView({
-        behavior: matchMedia('(prefers-reduced-motion: reduce)').matches
-          ? 'instant'
-          : 'smooth',
-        block: 'start',
-      });
+    close();
   }
   async function enableMotion() {
     if (motion) {
       setMotion(false);
-      setMotionStatus('Motion is off. Touch controls still work.');
+      setStatus('Motion off. You can still drag and tap.');
       return;
     }
-    if (!window.isSecureContext) {
-      setMotionStatus('Motion needs HTTPS. Touch controls work here.');
+    if (!window.isSecureContext || !('DeviceMotionEvent' in window)) {
+      setStatus('Motion is unavailable here. Drag or tap instead.');
       return;
     }
-    if (!('DeviceMotionEvent' in window)) {
-      setMotionStatus('Motion is unavailable here. Try the touch controls.');
-      return;
-    }
+    prepareAudio();
     try {
       const sensor = DeviceMotionEvent as typeof DeviceMotionEvent & {
         requestPermission?: () => Promise<string>;
       };
-      const result = sensor.requestPermission
+      const permission = sensor.requestPermission
         ? await sensor.requestPermission()
         : 'granted';
-      if (result !== 'granted') {
-        setMotionStatus('Access was declined. Touch controls still work.');
+      if (permission !== 'granted') {
+        setStatus('Motion access declined. Drag or tap instead.');
         return;
       }
       setMotion(true);
-      setMotionStatus(
-        'Motion enabled. Tilt in Gravity or shake the Rain stick.',
-      );
+      setStatus('Motion on. Tilt Gravity or shake Rain stick.');
     } catch {
-      setMotionStatus('Motion could not start. Touch controls still work.');
+      setStatus('Motion could not start. Drag or tap instead.');
     }
   }
-  const shown = fidgets.filter(
-    (f) =>
-      filter === 'All fidgets' ||
-      (filter === 'Favorites'
-        ? favorites.includes(f.id)
-        : f.category === filter),
-  );
+  const shown = onlyFavorites
+    ? fidgets.filter((f) => favorites.includes(f.id))
+    : fidgets;
   return (
-    <div className={`app-shell ${focus ? 'focus-mode' : ''}`}>
-      <header className="topbar">
-        <Link className="brand" href="/" aria-label="iFidget home">
-          <span className="brand-mark">
-            <i />
-            <i />
-            <i />
-            <i />
-          </span>
-          iFidget<span className="brand-period">.</span>
-        </Link>
-        <span className="header-note">A little less restless.</span>
-        <div className="header-actions">
+    <main className="minimal-app">
+      <div className={`quiet-scene ${open ? 'is-blurred' : ''}`} inert={open}>
+        <header className="desktop-brand">
+          iFidget<span>Nothing to do. Something to feel.</span>
+        </header>
+        <section className="fidget-stage" aria-label={current.name}>
+          <h1 className="sr-only">{current.name}</h1>
+          <div key={`${selected}-${reset}`} className="fidget-reveal">
+            <Playground
+              id={selected}
+              play={play}
+              motion={motion}
+              paused={open}
+            />
+          </div>
+          <p className="desktop-instruction">{current.instruction}</p>
+        </section>
+        <div className="bottom-dock">
           <button
-            className={`icon-button ${sound ? '' : 'muted'}`}
+            ref={moreButton}
+            className="more-button"
+            onClick={() => setOpen(true)}
+            aria-haspopup="dialog"
+          >
+            <Grid2X2 size={17} strokeWidth={1.7} />
+            More Fidgets
+          </button>
+        </div>
+      </div>
+      <dialog
+        ref={dialog}
+        className={`fidget-sheet ${closing ? 'is-closing' : ''}`}
+        aria-labelledby="picker-title"
+        onCancel={(e) => {
+          e.preventDefault();
+          close();
+        }}
+      >
+        <div className="sheet-heading">
+          <div>
+            <h2 id="picker-title">
+              More fidgets<span>12 ways to do nothing.</span>
+            </h2>
+          </div>
+          <button
+            className="round-button"
+            aria-label="Close fidgets"
+            onClick={close}
+            autoFocus
+          >
+            <X size={20} />
+          </button>
+        </div>
+        <div className="sheet-tools">
+          <button
+            className="round-button"
             aria-label={sound ? 'Mute sound' : 'Enable sound'}
+            aria-pressed={sound}
             onClick={() => {
               setSound(!sound);
               save({ sound: !sound });
-              if (!sound) feedback('keys', 4, true, false);
+              if (!sound) prepareAudio();
             }}
           >
             {sound ? <Volume2 size={19} /> : <VolumeX size={19} />}
           </button>
           <button
-            className="icon-button"
-            aria-label="Open settings"
-            onClick={openSettings}
+            className="round-button"
+            aria-label={dark ? 'Use light appearance' : 'Use dark appearance'}
+            aria-pressed={dark}
+            onClick={() => {
+              setDark(!dark);
+              save({ dark: !dark });
+            }}
           >
-            <Settings2 size={19} />
+            {dark ? <Sun size={19} /> : <Moon size={19} />}
+          </button>
+          <button
+            className="round-button"
+            aria-label="Reset current fidget"
+            onClick={() => {
+              setReset((r) => r + 1);
+              close();
+            }}
+          >
+            <RotateCcw size={18} />
+          </button>
+          <button
+            className="round-button"
+            aria-label={motion ? 'Disable motion' : 'Enable tilt and shake'}
+            aria-pressed={motion}
+            onClick={enableMotion}
+          >
+            <Smartphone size={19} />
+          </button>
+          <div className="tool-divider" />
+          <button
+            className="text-button"
+            aria-pressed={onlyFavorites}
+            onClick={() => setOnlyFavorites(!onlyFavorites)}
+          >
+            {onlyFavorites ? 'Show all' : 'Favorites'}
+            <Heart size={14} fill={onlyFavorites ? 'currentColor' : 'none'} />
           </button>
         </div>
-      </header>
-      <main>
-        <div className="intro">
-          <div>
-            <div className="eyebrow">
-              <span className="live-dot" /> YOUR POCKET PLAYGROUND
-            </div>
-            <h1>
-              Busy hands.
-              <br className="mobile-break" /> <span>Quiet mind.</span>
-            </h1>
-            <p>No scores. No rush. Just a little feel-good.</p>
-          </div>
-          <div className="intro-detail">
-            <span className="tiny-doodle">✳</span>
-            <span>
-              Made for your
-              <br />
-              in-between moments.
-            </span>
-          </div>
-        </div>
-        <section
-          ref={toyRef}
-          className="play-section"
-          style={{ '--toy-color': current.color } as React.CSSProperties}
-          aria-label={`${current.name} playground`}
-        >
-          <div className="play-heading">
-            <span>
-              <span className="live-dot" /> NOW PLAYING
-            </span>
-            <div>
-              <button
-                className={`icon-button favorite ${favorites.includes(selected) ? 'is-favorite' : ''}`}
-                aria-label={
-                  favorites.includes(selected)
-                    ? 'Remove favorite'
-                    : 'Favorite this fidget'
-                }
-                aria-pressed={favorites.includes(selected)}
-                onClick={() => {
-                  const next = favorites.includes(selected)
-                    ? favorites.filter((f) => f !== selected)
-                    : [...favorites, selected];
-                  setFavorites(next);
-                  save({ favorites: next });
-                }}
-              >
-                <Heart size={18} />
-              </button>
-              <button
-                className="icon-button"
-                aria-label={focus ? 'Exit focus mode' : 'Enter focus mode'}
-                onClick={() => setFocus(!focus)}
-              >
-                {focus ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
-              </button>
-            </div>
-          </div>
-          <div className="play-content">
-            <div className="toy-description">
-              <span className="eyebrow toy-tag">{current.tag}</span>
-              <h2>
-                {current.name}
-                <span>.</span>
-              </h2>
-              <p>{current.description}</p>
-              <div className="capabilities">
-                <span>
-                  <AudioLines size={14} /> Sound
-                </span>
-                <span>
-                  <Zap size={14} /> {canVibrate ? 'Haptics' : 'Touch'}
-                </span>
-                {current.category === 'Motion' && (
-                  <button onClick={enableMotion}>
-                    <Smartphone size={14} />
-                    {motion ? 'Motion on' : 'Enable motion'}
-                  </button>
-                )}
-              </div>
-              <div className="desktop-hint">
-                <span className="hint-line" />
-                {current.instruction}
-              </div>
-            </div>
-            <div className="main-toy">
-              <Playground
-                key={`${selected}-${reset}`}
-                id={selected}
-                play={play}
-                motion={motion}
-              />
-            </div>
-          </div>
-          <div className="play-footer">
-            <span className="play-instruction">
-              <Sparkles size={15} />
-              {current.instruction}
-            </span>
-            <button
-              className="reset-button"
-              onClick={() => {
-                setReset((r) => r + 1);
-                feedback('switch', 0, sound, false);
-              }}
+        {status && <output className="motion-status">{status}</output>}
+        <div className="picker-grid">
+          {shown.map((f) => (
+            <div
+              key={f.id}
+              className={`picker-card ${selected === f.id ? 'selected' : ''}`}
             >
-              <RotateCcw size={15} />
-              Reset
-            </button>
-          </div>
-        </section>
-        <section className="collection" aria-label="Fidget collection">
-          <div className="section-title">
-            <div>
-              <h2>
-                Find your happy place<span>12 little escapes</span>
-              </h2>
-            </div>
-            <button
-              className="shuffle-button"
-              onClick={() => {
-                const others = fidgets.filter((f) => f.id !== selected);
-                choose(
-                  others[Math.floor(Math.random() * others.length)].id,
-                  true,
-                );
-              }}
-            >
-              <Shuffle size={16} />
-              <span>Surprise me</span>
-            </button>
-          </div>
-          <fieldset className="filter-bar" aria-label="Filter fidgets">
-            {[
-              'All fidgets',
-              'Tap',
-              'Slide',
-              'Motion',
-              'Chill',
-              'Favorites',
-            ].map((f) => (
               <button
-                key={f}
-                className={filter === f ? 'active' : ''}
-                aria-pressed={filter === f}
-                onClick={() => setFilter(f)}
-              >
-                {f === 'Favorites' && <Heart size={13} />} {f}
-              </button>
-            ))}
-          </fieldset>
-          <div className="fidget-grid">
-            {shown.map((f, index) => (
-              <button
-                key={f.id}
-                className={`fidget-card ${selected === f.id ? 'selected' : ''}`}
-                style={
-                  {
-                    '--toy-color': f.color,
-                    '--card-index': index,
-                  } as React.CSSProperties
-                }
-                onClick={() => choose(f.id, true)}
+                className="pick-toy"
+                onClick={() => choose(f.id)}
                 aria-label={`Play ${f.name}`}
                 aria-pressed={selected === f.id}
               >
-                <div className="card-art" aria-hidden="true">
+                <div className="picker-art" aria-hidden="true">
                   <Playground
                     id={f.id}
                     play={silentPreview}
                     motion={false}
                     miniature
                   />
-                  {selected === f.id && (
-                    <span className="playing-badge">
-                      <i />
-                      <i />
-                      <i /> Playing
-                    </span>
+                </div>
+                <span className="picker-name">
+                  {f.name}
+                  {selected === f.id ? (
+                    <Check size={14} />
+                  ) : (
+                    <ArrowUpRight size={14} />
                   )}
-                  <span className="card-arrow">
-                    <ArrowUpRight size={17} />
-                  </span>
-                </div>
-                <div className="card-info">
-                  <h3>{f.name}</h3>
-                  <span>
-                    {f.category === 'Motion'
-                      ? 'Tilt & shake'
-                      : f.category === 'Slide'
-                        ? 'Swipe & feel'
-                        : f.category === 'Chill'
-                          ? 'Slow it down'
-                          : 'Tap & repeat'}
-                  </span>
-                </div>
+                </span>
               </button>
-            ))}
-          </div>
-          {shown.length === 0 && (
-            <div className="empty-state">
-              <Heart size={25} />
-              <h3>A place for your favorites.</h3>
-              <p>Tap the heart on a fidget to save it here.</p>
+              <button
+                className="favorite-button"
+                aria-label={`${favorites.includes(f.id) ? 'Unfavorite' : 'Favorite'} ${f.name}`}
+                aria-pressed={favorites.includes(f.id)}
+                onClick={() => {
+                  const next = favorites.includes(f.id)
+                    ? favorites.filter((id) => id !== f.id)
+                    : [...favorites, f.id];
+                  setFavorites(next);
+                  save({ favorites: next });
+                }}
+              >
+                <Heart
+                  size={14}
+                  fill={favorites.includes(f.id) ? 'currentColor' : 'none'}
+                />
+              </button>
             </div>
-          )}
-        </section>
-        <div className="closing-note">
-          <span>✳</span>
+          ))}
+        </div>
+        {!shown.length && (
+          <p className="empty-favorites">Tap a heart to keep a fidget here.</p>
+        )}
+        <div className="sheet-foot">
+          <span>{current.name}</span>
+          <span>{current.instruction}</span>
+        </div>
+        <details className="device-details">
+          <summary>Device options</summary>
           <p>
-            Sometimes, doing nothing
-            <br />
-            is a pretty good use of your time.
+            {vibration
+              ? 'Vibration is available on this device.'
+              : 'Vibration isn’t available in this browser. Sound and visual snaps still work.'}
           </p>
-        </div>
-      </main>
-      <footer className="site-footer">
-        <span className="footer-brand">iFidget.</span>
-        <span>Made for the joy of it.</span>
-        <button onClick={openSettings}>
-          <Smartphone size={14} /> Better in your hands{' '}
-          <ChevronRight size={14} />
-        </button>
-      </footer>
-      <dialog
-        ref={dialog}
-        className="settings-dialog"
-        onCancel={() => setSettings(false)}
-      >
-        <div className="dialog-heading">
-          <div>
-            <span className="eyebrow">MAKE YOURSELF COMFORTABLE</span>
-            <h2>Your kind of calm.</h2>
-          </div>
-          <button
-            className="icon-button"
-            autoFocus
-            aria-label="Close settings"
-            onClick={() => setSettings(false)}
-          >
-            <X size={20} />
-          </button>
-        </div>
-        <div className="setting-row">
-          <div>
-            <strong>Sound</strong>
-            <p>Small clicks, soft pops, and little notes.</p>
-          </div>
-          <button
-            role="switch"
-            aria-checked={sound}
-            aria-label="Sound"
-            className={`setting-toggle ${sound ? 'on' : ''}`}
-            onClick={() => {
-              setSound(!sound);
-              save({ sound: !sound });
-            }}
-          >
-            <i />
-          </button>
-        </div>
-        <div className="setting-row">
-          <div>
-            <strong>Vibration {canVibrate ? '' : 'unavailable'}</strong>
-            <p>
-              {canVibrate
-                ? 'A little feedback with every touch.'
-                : 'This browser doesn’t offer vibration. Enjoy sound and visual feedback instead.'}
-            </p>
-          </div>
-          <button
-            role="switch"
-            disabled={!canVibrate}
-            aria-checked={canVibrate && haptics}
-            aria-label="Vibration"
-            className={`setting-toggle ${canVibrate && haptics ? 'on' : ''}`}
-            onClick={() => {
-              setHaptics(!haptics);
-              save({ haptics: !haptics });
-            }}
-          >
-            <i />
-          </button>
-        </div>
-        <div className="setting-row">
-          <div>
-            <strong>Tilt & shake</strong>
-            <p aria-live="polite">{motionStatus}</p>
-          </div>
-          <button className="motion-button" onClick={enableMotion}>
-            {motion ? 'Disable' : 'Enable'}
-          </button>
-        </div>
-        <div className="home-tip">
-          <Smartphone size={23} />
-          <div>
-            <strong>A little closer to hand.</strong>
-            <p>
-              On iPhone, open Safari’s Share menu and choose “Add to Home
-              Screen”.
-            </p>
-          </div>
-        </div>
-        <div className="session-note">
-          {count} little moments of joy this visit.
-        </div>
+          {vibration && (
+            <button
+              className="text-button"
+              aria-pressed={haptics}
+              onClick={() => {
+                setHaptics(!haptics);
+                save({ haptics: !haptics });
+              }}
+            >
+              {haptics ? 'Turn vibration off' : 'Turn vibration on'}
+            </button>
+          )}
+          <p>On iPhone: Safari → Share → Add to Home Screen.</p>
+        </details>
       </dialog>
-    </div>
+    </main>
   );
 }

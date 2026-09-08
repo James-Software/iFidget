@@ -1,83 +1,143 @@
 'use client';
-import { memo, useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useId, useRef, useState } from 'react';
+import { angularDelta, constrainMarble, snapToDetents } from '@/lib/snaps';
+import { pointerAngle, squishShape } from '@/lib/gestures';
+import { prepareAudio } from '@/lib/feedback';
 import { pressHandlers } from '@/lib/press';
 import type { FidgetId } from '@/lib/fidgets';
 
 type Props = {
   id: FidgetId;
-  play: (kind: string, pitch?: number) => void;
+  play: (kind: string, pitch?: number, delay?: number) => void;
   motion: boolean;
   miniature?: boolean;
+  paused?: boolean;
 };
-function Playground({ id, play, motion, miniature = false }: Props) {
+function Playground({
+  id,
+  play,
+  motion,
+  miniature = false,
+  paused = false,
+}: Props) {
+  const squishGradient = useId();
   const [pressed, setPressed] = useState<Set<number>>(new Set());
-  const [value, setValue] = useState(0);
+  const [value, setValue] = useState(id === 'zip' ? 40 : 0);
   const [position, setPosition] = useState({ x: 50, y: 50 });
   const [held, setHeld] = useState(false);
+  const [rotation, setRotation] = useState(0);
+  const [reach, setReach] = useState({ x: 0, y: 0 });
+  const shape = squishShape(paused ? 0 : reach.x, paused ? 0 : reach.y);
   const [ripples, setRipples] = useState<
     { x: number; y: number; id: number }[]
   >([]);
   const [running, setRunning] = useState(false);
   const [phase, setPhase] = useState('Breathe in');
   const surface = useRef<HTMLDivElement>(null);
-  const last = useRef(0);
-  const angle = useRef(0);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
-  const active = useRef(false);
+  const active = useRef<number | null>(null);
+  const previousAngle = useRef<number | null>(null);
+  const raw = useRef(id === 'zip' ? 40 : 0);
+  const snapped = useRef(id === 'zip' ? 40 : 0);
+  const grab = useRef({ x: 50, y: 50 });
+  const contact = useRef(false);
+  const shakeArmed = useRef(true);
+  const rippleId = useRef(0);
   const playRef = useRef(play);
   useEffect(() => {
     playRef.current = play;
   }, [play]);
   useEffect(() => () => timers.current.forEach(clearTimeout), []);
   useEffect(() => {
-    if (!running || id !== 'breath') return;
+    if (!running || paused || id !== 'breath') return;
     let step = 0;
     const timer = setInterval(() => {
       step++;
       setPhase(step % 2 ? 'Breathe out' : 'Breathe in');
-      playRef.current('breath', step % 2 ? 0 : 4);
     }, 4000);
     return () => clearInterval(timer);
-  }, [running, id]);
+  }, [running, paused, id]);
   useEffect(() => {
     const pause = () => {
       if (document.hidden) {
         setRunning(false);
-        active.current = false;
+        active.current = null;
         setHeld(false);
+        setReach({ x: 0, y: 0 });
       }
     };
     document.addEventListener('visibilitychange', pause);
     return () => document.removeEventListener('visibilitychange', pause);
   }, []);
   useEffect(() => {
-    if (!motion || miniature || !['marble', 'rain'].includes(id)) return;
+    if (!motion || paused || miniature || !['marble', 'rain'].includes(id))
+      return;
     const move = (event: DeviceMotionEvent) => {
-      if (document.hidden) return;
-      const g = event.accelerationIncludingGravity;
-      if (!g || g.x == null || g.y == null) return;
-      if (id === 'marble')
-        setPosition({
-          x: Math.max(10, Math.min(90, 50 + g.x * 7)),
-          y: Math.max(10, Math.min(90, 50 - g.y * 7)),
-        });
-      const a = event.acceleration;
-      if (
-        id === 'rain' &&
-        a &&
-        Math.hypot(a.x || 0, a.y || 0, a.z || 0) > 8 &&
-        Date.now() - last.current > 140
-      ) {
-        last.current = Date.now();
-        setValue((v) => v + 1);
-        playRef.current('rain', Math.floor(Math.random() * 8));
+      if (document.hidden || active.current !== null) return;
+      if (id === 'marble') {
+        const g = event.accelerationIncludingGravity;
+        if (g?.x == null || g?.y == null) return;
+        const next = constrainMarble(50 + g.x * 7, 50 - g.y * 7);
+        if (next.contact && !contact.current) playRef.current('marble');
+        contact.current = next.contact;
+        setPosition(next);
+      } else {
+        const a = event.acceleration;
+        const force = Math.hypot(a?.x || 0, a?.y || 0, a?.z || 0);
+        if (force < 3) shakeArmed.current = true;
+        if (force > 8 && shakeArmed.current) {
+          shakeArmed.current = false;
+          setValue((v) => v + 1);
+          playRef.current('rain');
+        }
       }
     };
     window.addEventListener('devicemotion', move);
     return () => window.removeEventListener('devicemotion', move);
-  }, [id, motion, miniature]);
+  }, [id, motion, miniature, paused]);
+  useEffect(() => {
+    if (id !== 'spring' || miniature || paused) return;
+    const hover = (event: PointerEvent) => {
+      if (
+        event.pointerType !== 'mouse' ||
+        active.current !== null ||
+        document.hidden
+      )
+        return;
+      const rect = surface.current?.getBoundingClientRect();
+      if (rect)
+        setReach({
+          x: event.clientX - rect.left - rect.width / 2,
+          y: event.clientY - rect.top - rect.height / 2,
+        });
+    };
+    const leave = (event: PointerEvent) => {
+      if (event.relatedTarget === null && active.current === null)
+        setReach({ x: 0, y: 0 });
+    };
+    window.addEventListener('pointermove', hover);
+    window.addEventListener('pointerout', leave);
+    return () => {
+      window.removeEventListener('pointermove', hover);
+      window.removeEventListener('pointerout', leave);
+    };
+  }, [id, miniature, paused]);
+  function reachTo(event: React.PointerEvent) {
+    const rect = surface.current!.getBoundingClientRect();
+    setReach({
+      x: event.clientX - rect.left - rect.width / 2,
+      y: event.clientY - rect.top - rect.height / 2,
+    });
+  }
+  function later(action: () => void, duration: number) {
+    const timer = setTimeout(() => {
+      action();
+      timers.current = timers.current.filter((t) => t !== timer);
+    }, duration);
+    timers.current.push(timer);
+  }
   function toggle(index: number) {
-    if (miniature) return;
+    if (miniature || paused) return;
     setPressed((previous) => {
       const next = new Set(previous);
       if (next.has(index)) next.delete(index);
@@ -89,73 +149,44 @@ function Playground({ id, play, motion, miniature = false }: Props) {
   function point(event: React.PointerEvent) {
     const rect = surface.current!.getBoundingClientRect();
     return {
-      x: Math.max(
-        5,
-        Math.min(95, ((event.clientX - rect.left) / rect.width) * 100),
-      ),
-      y: Math.max(
-        5,
-        Math.min(95, ((event.clientY - rect.top) / rect.height) * 100),
-      ),
+      x: ((event.clientX - rect.left) / rect.width) * 100,
+      y: ((event.clientY - rect.top) / rect.height) * 100,
     };
   }
-  function down(event: React.PointerEvent<HTMLDivElement>) {
-    if (
-      miniature ||
-      ![
-        'dial',
-        'marble',
-        'ripple',
-        'spinner',
-        'zip',
-        'spring',
-        'rain',
-      ].includes(id)
-    )
-      return;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    active.current = true;
-    setHeld(true);
-    const p = point(event);
-    setPosition(p);
-    play(id);
-    if (id === 'dial')
-      angle.current = (Math.atan2(p.y - 50, p.x - 50) * 180) / Math.PI;
-    if (id === 'ripple') {
-      const stamp = Date.now();
-      setRipples((r) => [...r.slice(-9), { ...p, id: stamp }]);
-      const timer = setTimeout(() => {
-        setRipples((r) => r.filter((r) => r.id !== stamp));
-        timers.current = timers.current.filter((t) => t !== timer);
-      }, 1800);
-      timers.current.push(timer);
-    }
-    if (id === 'spinner') setValue((v) => v + 720);
-    if (id === 'rain') setValue((v) => v + 1);
-    if (id === 'zip') setValue(p.y);
+  function angleAt(event: React.PointerEvent) {
+    const rect = surface.current!.getBoundingClientRect();
+    return pointerAngle(
+      event.clientX - rect.left,
+      event.clientY - rect.top,
+      rect.width,
+      rect.height,
+    );
   }
-  function move(event: React.PointerEvent<HTMLDivElement>) {
-    if (!active.current) return;
-    const p = point(event);
-    setPosition(p);
-    if (id === 'dial') {
-      const next = (Math.atan2(p.y - 50, p.x - 50) * 180) / Math.PI;
-      let delta = next - angle.current;
-      if (delta > 180) delta -= 360;
-      if (delta < -180) delta += 360;
-      setValue((v) => v + delta);
-      angle.current = next;
-    }
-    if (id === 'zip') setValue(p.y);
-    if (id === 'spinner') setValue((v) => v + 28);
-    if (Date.now() - last.current > 40 && id !== 'ripple') {
-      last.current = Date.now();
-      play(id, Math.floor(p.y));
-    }
+  function snap(target: number) {
+    const step = id === 'zip' ? 5 : id === 'spinner' ? 30 : 15;
+    const next = snapToDetents(
+      target,
+      snapped.current,
+      step,
+      id === 'zip' ? 10 : -Infinity,
+      id === 'zip' ? 80 : Infinity,
+    );
+    if (!next.crossed.length) return;
+    snapped.current = next.value;
+    setValue(next.value);
+    next.crossed.forEach((notch, i) => play(id, notch / step, i * 0.008));
   }
-  function release() {
-    active.current = false;
-    setHeld(false);
+  function roll(p: { x: number; y: number }) {
+    const next = constrainMarble(p.x, p.y);
+    if (next.contact && !contact.current) play('marble');
+    contact.current = next.contact;
+    setPosition(next);
+  }
+  function ripple(p: { x: number; y: number }) {
+    const stamp = ++rippleId.current;
+    setRipples((r) => [...r.slice(-9), { ...p, id: stamp }]);
+    later(() => setRipples((r) => r.filter((r) => r.id !== stamp)), 1500);
+    play('ripple');
   }
   const interactive = [
     'dial',
@@ -166,13 +197,124 @@ function Playground({ id, play, motion, miniature = false }: Props) {
     'spring',
     'rain',
   ].includes(id);
+  function down(event: React.PointerEvent<HTMLDivElement>) {
+    if (
+      !interactive ||
+      miniature ||
+      paused ||
+      event.button !== 0 ||
+      active.current !== null
+    )
+      return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    active.current = event.pointerId;
+    setHeld(true);
+    prepareAudio(); // Unlock without making a sound; contact alone is not a snap.
+    const p = point(event);
+    grab.current = p;
+    raw.current = snapped.current;
+    previousAngle.current = angleAt(event);
+    if (id === 'dial') setRotation(snapped.current);
+    if (id === 'spring') reachTo(event);
+    if (id === 'marble') roll(p);
+    if (id === 'ripple') ripple(p);
+    if (id === 'rain') {
+      setValue((v) => v + 1);
+      play('rain');
+    }
+  }
+  function move(event: React.PointerEvent<HTMLDivElement>) {
+    if (active.current !== event.pointerId || paused) return;
+    const p = point(event);
+    if (id === 'dial' || id === 'spinner') {
+      const next = angleAt(event);
+      if (next !== null && previousAngle.current !== null) {
+        raw.current += angularDelta(previousAngle.current, next);
+        if (id === 'dial') setRotation(raw.current);
+        snap(raw.current);
+      }
+      previousAngle.current = next;
+    }
+    if (id === 'zip') {
+      raw.current = Math.max(
+        10,
+        Math.min(80, raw.current + p.y - grab.current.y),
+      );
+      grab.current = p;
+      snap(raw.current);
+    }
+    if (id === 'marble') roll(p);
+    if (id === 'spring') reachTo(event);
+    if (
+      id === 'rain' &&
+      Math.hypot(p.x - grab.current.x, p.y - grab.current.y) > 18
+    ) {
+      grab.current = p;
+      setValue((v) => v + 1);
+      play('rain');
+    }
+  }
+  function release(event: React.PointerEvent<HTMLDivElement>) {
+    if (active.current !== event.pointerId) return;
+    active.current = null;
+    setHeld(false);
+    if (id === 'spring') setReach({ x: 0, y: 0 });
+    if (id === 'spring' && event.type === 'pointerup' && !paused)
+      play('spring');
+  }
+  function keyboard(event: React.KeyboardEvent) {
+    if (
+      !interactive ||
+      miniature ||
+      paused ||
+      ![
+        ' ',
+        'Enter',
+        'ArrowUp',
+        'ArrowDown',
+        'ArrowLeft',
+        'ArrowRight',
+      ].includes(event.key)
+    )
+      return;
+    event.preventDefault();
+    if (event.repeat) return;
+    const direction = ['ArrowLeft', 'ArrowDown'].includes(event.key) ? -1 : 1;
+    if (['dial', 'spinner', 'zip'].includes(id)) {
+      const step = id === 'zip' ? 5 : id === 'dial' ? 15 : 30;
+      snap(snapped.current + direction * step);
+    } else if (id === 'marble') {
+      roll({
+        x:
+          position.x +
+          (event.key === 'ArrowLeft'
+            ? -10
+            : event.key === 'ArrowRight'
+              ? 10
+              : 0),
+        y: position.y + (event.key === 'ArrowUp' ? -10 : 10),
+      });
+    } else if (id === 'ripple') ripple({ x: 50, y: 50 });
+    else if (id === 'rain') {
+      setValue((v) => v + 1);
+      play('rain');
+    } else if (id === 'spring') {
+      setReach({ x: 0, y: -120 });
+      setHeld(true);
+      later(() => {
+        setHeld(false);
+        setReach({ x: 0, y: 0 });
+        play('spring');
+      }, 150);
+    }
+  }
   const ToyButton = miniature ? 'span' : 'button';
   // This container becomes a keyboard-operable button only for continuous gesture toys.
   return (
     // eslint-disable-next-line jsx-a11y/no-static-element-interactions
     <div
       ref={surface}
-      className={`toy toy-${id} ${held ? 'held' : ''} ${running ? 'running' : ''} ${miniature ? 'miniature' : ''}`}
+      className={`toy toy-${id} ${held ? 'held' : ''} ${running && !paused ? 'running' : ''} ${miniature ? 'miniature' : ''}`}
       onPointerDown={down}
       onPointerMove={move}
       onPointerUp={release}
@@ -185,51 +327,7 @@ function Playground({ id, play, motion, miniature = false }: Props) {
           ? `${id} fidget. Use arrow keys or space to play.`
           : undefined
       }
-      onKeyDown={(e) => {
-        if (
-          !interactive ||
-          miniature ||
-          ![
-            ' ',
-            'Enter',
-            'ArrowUp',
-            'ArrowDown',
-            'ArrowLeft',
-            'ArrowRight',
-          ].includes(e.key)
-        )
-          return;
-        e.preventDefault();
-        play(id, value);
-        setValue((v) =>
-          id === 'zip'
-            ? Math.max(5, Math.min(95, v + (e.key === 'ArrowUp' ? -10 : 10)))
-            : v + 90,
-        );
-        setPosition((p) => ({
-          x: Math.max(
-            10,
-            Math.min(
-              90,
-              p.x +
-                (e.key === 'ArrowLeft' ? -10 : e.key === 'ArrowRight' ? 10 : 0),
-            ),
-          ),
-          y: Math.max(10, Math.min(90, p.y + (e.key === 'ArrowUp' ? -10 : 10))),
-        }));
-        if (id === 'ripple') {
-          const stamp = Date.now();
-          setRipples((r) => [...r.slice(-5), { x: 50, y: 50, id: stamp }]);
-        }
-        if (id === 'spring') {
-          setHeld(true);
-          const timer = setTimeout(() => {
-            setHeld(false);
-            timers.current = timers.current.filter((t) => t !== timer);
-          }, 180);
-          timers.current.push(timer);
-        }
-      }}
+      onKeyDown={keyboard}
     >
       {(id === 'pop' || id === 'bubble') && (
         <div className={`pop-board ${id === 'bubble' ? 'wrap' : ''}`}>
@@ -264,14 +362,25 @@ function Playground({ id, play, motion, miniature = false }: Props) {
       )}
       {id === 'dial' && (
         <div className="wheel">
+          <div className="wheel-ticks">
+            {Array.from({ length: 24 }, (_, i) => (
+              <i
+                key={i}
+                style={{ transform: `rotate(${i * 15}deg) translateY(-141px)` }}
+              />
+            ))}
+          </div>
           <div
             className="wheel-inner"
-            style={{ transform: `rotate(${value}deg)` }}
+            style={{ transform: `rotate(${held ? rotation : value}deg)` }}
           >
             <i />
           </div>
           <span>
-            {String(Math.abs(Math.round(value / 15))).padStart(3, '0')}
+            {String((((Math.round(value / 15) % 24) + 24) % 24) + 1).padStart(
+              2,
+              '0',
+            )}
           </span>
         </div>
       )}
@@ -328,10 +437,7 @@ function Playground({ id, play, motion, miniature = false }: Props) {
       {id === 'zip' && (
         <div className="zipper">
           <div className="zip-teeth" />
-          <div
-            className="zip-pull"
-            style={{ top: `${Math.max(5, Math.min(82, value || 40))}%` }}
-          >
+          <div className="zip-pull" style={{ top: `${value}%` }}>
             <i />
           </div>
         </div>
@@ -343,7 +449,6 @@ function Playground({ id, play, motion, miniature = false }: Props) {
           {...pressHandlers(() => {
             setPhase('Breathe in');
             setRunning((r) => !r);
-            play(id, 4);
           })}
           aria-label={running ? 'Pause breathing' : 'Start breathing'}
         >
@@ -368,18 +473,35 @@ function Playground({ id, play, motion, miniature = false }: Props) {
         </div>
       )}
       {id === 'spring' && (
-        <div
-          className="squish"
-          style={{
-            transform: held
-              ? `scale(1.2,.76) rotate(${(position.x - 50) / 3}deg)`
-              : 'scale(1)',
-          }}
-        >
-          <i />
-          <i />
-          <span>⌣</span>
-        </div>
+        <svg className="squish" viewBox="-109 -109 218 218" aria-hidden="true">
+          <defs>
+            <radialGradient
+              id={squishGradient}
+              gradientUnits="userSpaceOnUse"
+              cx="-40"
+              cy="-55"
+              r="260"
+            >
+              <stop offset="0" stopColor="#dedede" />
+              <stop offset=".6" stopColor="#b2b2b2" />
+              <stop offset="1" stopColor="#888888" />
+            </radialGradient>
+          </defs>
+          <path
+            d={shape.path}
+            transform={`rotate(${shape.angle})`}
+            fill={`url(#${squishGradient})`}
+          />
+          <ellipse cx="-17" cy="-4" rx="4" ry="6.5" fill="#505050" />
+          <ellipse cx="17" cy="-4" rx="4" ry="6.5" fill="#505050" />
+          <path
+            d="M -12 8 Q 0 19 12 8"
+            fill="none"
+            stroke="#505050"
+            strokeWidth="2"
+            strokeLinecap="round"
+          />
+        </svg>
       )}
     </div>
   );

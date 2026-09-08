@@ -4,16 +4,17 @@ export const metadata: Metadata = {
   title: 'iFidget — A little less restless.',
   description:
     'Your pocket playground. Twelve satisfying fidgets with touch, sound, and motion. Pick one. Zone out.',
+  icons: { icon: '/favicon.svg' },
   appleWebApp: {
     capable: true,
-    statusBarStyle: 'black-translucent',
+    statusBarStyle: 'default',
     title: 'iFidget',
   },
 };
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
-  themeColor: '#101112',
+  themeColor: '#ffffff',
   viewportFit: 'cover',
 };
 export default function RootLayout({
