@@ -990,3 +990,14 @@ p {
     opacity: 0.5;
   }
 }
+
+/* Artwork is a sibling, never a descendant, of the selection button. */
+.pick-toy::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 18px;
+}
+.favorite-button {
+  z-index: 1;
+}
