@@ -254,20 +254,20 @@ export default function Home() {
               key={f.id}
               className={`picker-card ${selected === f.id ? 'selected' : ''}`}
             >
+              <div className="picker-art" aria-hidden="true" inert>
+                <Playground
+                  id={f.id}
+                  play={silentPreview}
+                  motion={false}
+                  miniature
+                />
+              </div>
               <button
                 className="pick-toy"
                 onClick={() => choose(f.id)}
                 aria-label={`Play ${f.name}`}
                 aria-pressed={selected === f.id}
               >
-                <div className="picker-art" aria-hidden="true">
-                  <Playground
-                    id={f.id}
-                    play={silentPreview}
-                    motion={false}
-                    miniature
-                  />
-                </div>
                 <span className="picker-name">
                   {f.name}
                   {selected === f.id ? (
